@@ -1,68 +1,102 @@
+const socket = io(); // Connect to the signaling server
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+const connectRandomBtn = document.getElementById('connectRandom');
+const endCallBtn = document.getElementById('endCall');
+
 let localStream;
-let remoteStream;
 let peerConnection;
-const startBtn = document.getElementById("startBtn");
-const endBtn = document.getElementById("endBtn");
-const localVideo = document.getElementById("localVideo");
-const remoteVideo = document.getElementById("remoteVideo");
+let remoteStream;
+let connectedUserId;
 
-// Set up your media stream
-async function startVideo() {
-    const constraints = {
-        video: true,
-        audio: true
-    };
+const configuration = {
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+};
 
+// Get local media stream
+async function getLocalStream() {
     try {
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        localVideo.srcObject = localStream;
-        startBtn.disabled = true;
-        endBtn.disabled = false;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = stream;
+        localStream = stream;
     } catch (err) {
-        console.error("Error accessing media devices.", err);
+        console.error('Error accessing media devices:', err);
     }
 }
 
-// WebRTC configuration
-const configuration = {
-    iceServers: [
-        {
-            urls: "stun:stun.l.google.com:19302"
-        }
-    ]
-};
-
-// Create peer connection
+// Create a new peer connection
 function createPeerConnection() {
     peerConnection = new RTCPeerConnection(configuration);
-
-    // Add local stream to the peer connection
+    peerConnection.addEventListener('icecandidate', handleICECandidate);
+    peerConnection.addEventListener('track', handleTrackEvent);
+    
     localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-    // Listen for remote stream
-    peerConnection.ontrack = (event) => {
-        remoteStream = event.streams[0];
-        remoteVideo.srcObject = remoteStream;
-    };
-
-    // ICE candidate handling
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            // Send candidate to remote peer
-        }
-    };
 }
 
-// Button Event Listeners
-startBtn.addEventListener("click", () => {
-    startVideo();
-    createPeerConnection();
-    // Here you would typically signal with a server
+// Handle incoming ICE candidates
+function handleICECandidate(event) {
+    if (event.candidate) {
+        socket.emit('ice-candidate', event.candidate, connectedUserId);
+    }
+}
+
+// Handle incoming media tracks
+function handleTrackEvent(event) {
+    remoteVideo.srcObject = event.streams[0];
+    remoteStream = event.streams[0];
+}
+
+// Start the connection with a random user
+connectRandomBtn.addEventListener('click', () => {
+    socket.emit('connect-random');
 });
 
-endBtn.addEventListener("click", () => {
+// Listen for random user connection
+socket.on('random-user-found', (userId) => {
+    connectedUserId = userId;
+    createPeerConnection();
+
+    // Create offer
+    peerConnection.createOffer().then(offer => {
+        return peerConnection.setLocalDescription(offer);
+    }).then(() => {
+        socket.emit('offer', peerConnection.localDescription, connectedUserId);
+    });
+
+    endCallBtn.disabled = false;
+    connectRandomBtn.disabled = true;
+});
+
+// Handle incoming offer
+socket.on('offer', (offer, senderId) => {
+    connectedUserId = senderId;
+    createPeerConnection();
+
+    peerConnection.setRemoteDescription(new RTCSessionDescription(offer)).then(() => {
+        return peerConnection.createAnswer();
+    }).then(answer => {
+        return peerConnection.setLocalDescription(answer);
+    }).then(() => {
+        socket.emit('answer', peerConnection.localDescription, connectedUserId);
+    });
+});
+
+// Handle incoming answer
+socket.on('answer', (answer) => {
+    peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+});
+
+// Handle incoming ICE candidates
+socket.on('ice-candidate', (candidate) => {
+    peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+});
+
+// End the call
+endCallBtn.addEventListener('click', () => {
     peerConnection.close();
     localStream.getTracks().forEach(track => track.stop());
-    startBtn.disabled = false;
-    endBtn.disabled = true;
+    connectRandomBtn.disabled = false;
+    endCallBtn.disabled = true;
 });
+
+getLocalStream();
